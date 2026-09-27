@@ -34,7 +34,7 @@ class UpdateInfo {
 class UpdateService {
   static const MethodChannel _channel = MethodChannel('com.example.sms_to_telegram/sms');
 
-  static const String currentVersion = '1.0.0';
+  static const String currentVersion = '1.0.1';
   static const String keyGithubRepo = 'github_repo_slug';
   static const String keyGithubToken = 'github_personal_token';
   static const String defaultRepo = 'roshanjuyal-design/sms-telegram';
