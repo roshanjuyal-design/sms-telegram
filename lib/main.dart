@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'screens/main_ios_shell.dart';
+import 'services/offline_queue_service.dart';
 import 'services/settings_service.dart';
 import 'services/soundbox_service.dart';
 import 'services/transaction_history_service.dart';
@@ -82,14 +83,25 @@ String parsePaymentSms(String body) {
 }
 
 /// Dispatches the message to all dynamically configured active Telegram chat IDs.
-Future<void> sendToTelegram(String message) async {
+/// If sending fails due to offline connectivity, automatically enqueues for background retry.
+Future<bool> sendToTelegram(
+  String message, {
+  String rawSms = '',
+  String sender = '',
+  String amount = '',
+  String txnId = '',
+}) async {
   final String botToken = await SettingsService.getBotToken();
   final List<String> chatIds = await SettingsService.getActiveChatIds();
 
   if (botToken.trim().isEmpty || chatIds.isEmpty) {
     debugPrint('Cannot forward to Telegram: Bot token or chat IDs are empty.');
-    return;
+    return false;
   }
+
+  final List<String> successfulChatIds = [];
+  final List<String> failedChatIds = [];
+  String? lastError;
 
   for (final String chatId in chatIds) {
     final Uri url = Uri.parse(
@@ -97,16 +109,37 @@ Future<void> sendToTelegram(String message) async {
     );
 
     try {
-      final response = await http.get(url);
+      final response = await http.get(url).timeout(const Duration(seconds: 8));
       if (response.statusCode == 200) {
+        successfulChatIds.add(chatId);
         debugPrint('Telegram message sent successfully to $chatId');
       } else {
+        failedChatIds.add(chatId);
+        lastError = 'HTTP ${response.statusCode}: ${response.body}';
         debugPrint('Failed to send message to $chatId: ${response.statusCode} - ${response.body}');
       }
     } catch (e) {
+      failedChatIds.add(chatId);
+      lastError = e.toString();
       debugPrint('Error sending message to Telegram ($chatId): $e');
     }
   }
+
+  // If any chat ID failed or network was down, enqueue to Offline Queue
+  if (failedChatIds.isNotEmpty && rawSms.isNotEmpty) {
+    await OfflineQueueService.enqueueMessage(
+      rawSms: rawSms,
+      formattedTelegramMessage: message,
+      sender: sender,
+      amount: amount,
+      txnId: txnId,
+      targetChatIds: chatIds,
+      alreadyDelivered: successfulChatIds,
+      initialError: lastError,
+    );
+  }
+
+  return failedChatIds.isEmpty;
 }
 
 /// Helper function to filter SMS messages.
@@ -192,24 +225,37 @@ Future<void> onNewMessage(dynamic body, [String sender = '']) async {
 
   if (shouldForwardSms(smsBody, sender)) {
     final String parsedMessage = parsePaymentSms(smsBody);
-    await sendToTelegram(parsedMessage);
+
+    // Extract transaction metadata
+    final RegExp amountRegex = RegExp(r'(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d+)?)', caseSensitive: false);
+    final RegExp senderRegex = RegExp(r'(?:received from|from)\s+([^\s,:]+)', caseSensitive: false);
+    final RegExp txnRegex = RegExp(r'(?:transaction\s*ID|Txn\s*ID|Ref(?:\s*No)?|UPI\s*Ref)[:\s]+([a-zA-Z0-9]+)', caseSensitive: false);
+
+    final String amount = amountRegex.firstMatch(smsBody)?.group(1) ?? '';
+    final String fromSender = senderRegex.firstMatch(smsBody)?.group(1) ?? sender;
+    final String txnId = txnRegex.firstMatch(smsBody)?.group(1) ?? '';
+
+    final bool sent = await sendToTelegram(
+      parsedMessage,
+      rawSms: smsBody,
+      sender: fromSender,
+      amount: amount,
+      txnId: txnId,
+    );
 
     // Save to Transaction History
     await TransactionHistoryService.addLog(
       TransactionHistoryService.createLogFromSms(
         rawBody: smsBody,
         sender: sender,
-        isForwarded: true,
-        statusReason: 'Forwarded to Telegram & Soundbox',
+        isForwarded: sent,
+        statusReason: sent
+            ? 'Forwarded to Telegram & Soundbox'
+            : 'Saved to Offline Queue (Will auto-retry when network is available)',
       ),
     );
 
     // Announce via Voice Soundbox
-    final RegExp amountRegex = RegExp(r'(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d+)?)', caseSensitive: false);
-    final RegExp senderRegex = RegExp(r'(?:received from|from)\s+([^\s,:]+)', caseSensitive: false);
-    final String amount = amountRegex.firstMatch(smsBody)?.group(1) ?? '';
-    final String fromSender = senderRegex.firstMatch(smsBody)?.group(1) ?? sender;
-
     if (amount.isNotEmpty) {
       await SoundboxService.announcePayment(
         amount: amount,
@@ -239,24 +285,36 @@ Future<void> onBackgroundMessage(dynamic body, [String sender = '']) async {
 
   if (shouldForwardSms(smsBody, sender)) {
     final String parsedMessage = parsePaymentSms(smsBody);
-    await sendToTelegram(parsedMessage);
+
+    final RegExp amountRegex = RegExp(r'(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d+)?)', caseSensitive: false);
+    final RegExp senderRegex = RegExp(r'(?:received from|from)\s+([^\s,:]+)', caseSensitive: false);
+    final RegExp txnRegex = RegExp(r'(?:transaction\s*ID|Txn\s*ID|Ref(?:\s*No)?|UPI\s*Ref)[:\s]+([a-zA-Z0-9]+)', caseSensitive: false);
+
+    final String amount = amountRegex.firstMatch(smsBody)?.group(1) ?? '';
+    final String fromSender = senderRegex.firstMatch(smsBody)?.group(1) ?? sender;
+    final String txnId = txnRegex.firstMatch(smsBody)?.group(1) ?? '';
+
+    final bool sent = await sendToTelegram(
+      parsedMessage,
+      rawSms: smsBody,
+      sender: fromSender,
+      amount: amount,
+      txnId: txnId,
+    );
 
     // Save to Transaction History
     await TransactionHistoryService.addLog(
       TransactionHistoryService.createLogFromSms(
         rawBody: smsBody,
         sender: sender,
-        isForwarded: true,
-        statusReason: 'Background Forwarded to Telegram',
+        isForwarded: sent,
+        statusReason: sent
+            ? 'Background Forwarded to Telegram'
+            : 'Background Offline Queue: Will auto-retry on reconnect',
       ),
     );
 
     // Announce via Voice Soundbox in background
-    final RegExp amountRegex = RegExp(r'(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d+)?)', caseSensitive: false);
-    final RegExp senderRegex = RegExp(r'(?:received from|from)\s+([^\s,:]+)', caseSensitive: false);
-    final String amount = amountRegex.firstMatch(smsBody)?.group(1) ?? '';
-    final String fromSender = senderRegex.firstMatch(smsBody)?.group(1) ?? sender;
-
     if (amount.isNotEmpty) {
       await SoundboxService.announcePayment(
         amount: amount,
@@ -294,6 +352,7 @@ void setupSmsListener() {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   setupSmsListener();
+  OfflineQueueService.startWatchdog();
   runApp(const MyApp());
 }
 

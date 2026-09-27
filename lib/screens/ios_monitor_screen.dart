@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../main.dart';
 import '../services/battery_helper_service.dart';
+import '../services/offline_queue_service.dart';
 import '../services/settings_service.dart';
 import '../services/soundbox_service.dart';
 import '../services/transaction_history_service.dart';
@@ -19,13 +20,13 @@ class IosMonitorScreen extends StatefulWidget {
 class _IosMonitorScreenState extends State<IosMonitorScreen> with WidgetsBindingObserver {
   bool _isLoading = true;
   bool _isBatteryIgnored = false;
-  bool _isSoundboxEnabled = true;
   int _activeAgentsCount = 0;
   bool _isBotConfigured = false;
   bool _isTesting = false;
   double _todayTotal = 0.0;
   int _todayCount = 0;
-  String _soundboxLanguage = SoundboxService.langTelugu;
+  int _pendingQueueCount = 0;
+  bool _isFlushingQueue = false;
 
   @override
   void initState() {
@@ -44,6 +45,7 @@ class _IosMonitorScreenState extends State<IosMonitorScreen> with WidgetsBinding
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshStatus();
+      OfflineQueueService.processQueue();
     }
   }
 
@@ -51,34 +53,44 @@ class _IosMonitorScreenState extends State<IosMonitorScreen> with WidgetsBinding
     final botToken = await SettingsService.getBotToken();
     final activeChatIds = await SettingsService.getActiveChatIds();
     final isBatteryIgnored = await BatteryHelperService.isIgnoringBatteryOptimizations();
-    final soundboxEnabled = await SoundboxService.isEnabled();
-    final soundboxLang = await SoundboxService.getLanguage();
     final stats = await TransactionHistoryService.getStats();
+    final queueCount = await OfflineQueueService.getPendingCount();
 
     if (mounted) {
       setState(() {
         _isBotConfigured = botToken.trim().isNotEmpty;
         _activeAgentsCount = activeChatIds.length;
         _isBatteryIgnored = isBatteryIgnored;
-        _isSoundboxEnabled = soundboxEnabled;
-        _soundboxLanguage = soundboxLang;
         _todayTotal = (stats['todayTotal'] is num) ? (stats['todayTotal'] as num).toDouble() : 0.0;
         _todayCount = (stats['todayForwardedCount'] is int) ? (stats['todayForwardedCount'] as int) : 0;
+        _pendingQueueCount = queueCount;
         _isLoading = false;
       });
     }
   }
 
-  String _getLangDisplay(String code) {
-    switch (code) {
-      case SoundboxService.langTelugu:
-        return 'తెలుగు';
-      case SoundboxService.langHindi:
-        return 'हिंदी';
-      case SoundboxService.langEnglishIndia:
-        return 'English (IN)';
-      default:
-        return 'English';
+  Future<void> _flushOfflineQueue() async {
+    setState(() => _isFlushingQueue = true);
+    final result = await OfflineQueueService.processQueue();
+    await _refreshStatus();
+    setState(() => _isFlushingQueue = false);
+
+    if (mounted) {
+      showCupertinoDialog<void>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: const Text('Offline Queue Synced'),
+          content: Text(
+            'Processed: ${result['processed']}, Delivered: ${result['delivered']}, Failed: ${result['failed']}.',
+          ),
+          actions: [
+            CupertinoDialogAction(
+              child: const Text('OK'),
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+          ],
+        ),
+      );
     }
   }
 
@@ -225,11 +237,11 @@ class _IosMonitorScreenState extends State<IosMonitorScreen> with WidgetsBinding
                               const SizedBox(width: 8),
                               Expanded(
                                 child: _buildStatusTile(
-                                  icon: CupertinoIcons.speaker_2_fill,
-                                  title: 'Soundbox',
-                                  subtitle: _isSoundboxEnabled ? _getLangDisplay(_soundboxLanguage) : 'Off',
-                                  color: _isSoundboxEnabled ? IosColors.systemPurple : IosColors.tertiaryLabel,
-                                  onTap: () => widget.onNavigateTab(2), // Soundbox
+                                  icon: CupertinoIcons.arrow_2_circlepath_circle_fill,
+                                  title: 'Offline Queue',
+                                  subtitle: _pendingQueueCount == 0 ? 'Synced (0)' : '$_pendingQueueCount Pending',
+                                  color: _pendingQueueCount == 0 ? IosColors.systemGreen : IosColors.systemOrange,
+                                  onTap: _flushOfflineQueue,
                                 ),
                               ),
                             ],
@@ -237,6 +249,43 @@ class _IosMonitorScreenState extends State<IosMonitorScreen> with WidgetsBinding
                         ],
                       ),
                     ),
+
+                    // Pending Queue Alert Banner (if any offline items)
+                    if (_pendingQueueCount > 0)
+                      IosGroupedCard(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        child: Row(
+                          children: [
+                            const Icon(CupertinoIcons.exclamationmark_triangle_fill, color: IosColors.systemOrange, size: 22),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '$_pendingQueueCount SMS in Offline Queue',
+                                    style: const TextStyle(color: IosColors.label, fontSize: 14, fontWeight: FontWeight.w600),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  const Text(
+                                    'Auto-retrying in background when internet reconnects.',
+                                    style: TextStyle(color: IosColors.secondaryLabel, fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            CupertinoButton(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              color: IosColors.systemOrange.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(8),
+                              onPressed: _isFlushingQueue ? null : _flushOfflineQueue,
+                              child: _isFlushingQueue
+                                  ? const CupertinoActivityIndicator(radius: 6)
+                                  : const Text('Retry', style: TextStyle(color: IosColors.systemOrange, fontSize: 13, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      ),
 
                     const IosSectionHeader(title: "Today's Business"),
 
