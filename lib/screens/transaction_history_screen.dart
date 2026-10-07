@@ -85,26 +85,65 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
     await showCupertinoModalPopup<void>(
       context: context,
       builder: (ctx) => CupertinoActionSheet(
-        title: const Text('Transaction Logs Actions'),
-        message: const Text('Export logs or manage local transaction storage.'),
+        title: const Text('UPI Merchant Statement & Exports'),
+        message: const Text('View merchant statement table or export clean transaction logs.'),
         actions: [
           CupertinoActionSheetAction(
             child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(CupertinoIcons.share, size: 18, color: IosColors.systemBlue),
+                Icon(CupertinoIcons.table, size: 18, color: IosColors.systemOrange),
                 SizedBox(width: 8),
-                Text('Copy All as CSV / Text'),
+                Text('View Merchant Statement (Table)'),
+              ],
+            ),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _showMerchantStatementTableDialog();
+            },
+          ),
+          CupertinoActionSheetAction(
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(CupertinoIcons.doc_text, size: 18, color: IosColors.systemBlue),
+                SizedBox(width: 8),
+                Text('Copy Clean Statement (WhatsApp / Notes)'),
               ],
             ),
             onPressed: () async {
               Navigator.of(ctx).pop();
-              final csv = await TransactionHistoryService.exportLogsAsCsv();
-              await Clipboard.setData(ClipboardData(text: csv));
+              final text = await TransactionHistoryService.exportCleanStatementText(
+                creditedOnly: _selectedSegment == 1,
+              );
+              await Clipboard.setData(ClipboardData(text: text));
               if (mounted) {
                 _showIosAlert(
-                  title: 'Copied to Clipboard',
-                  message: 'Full transaction logs CSV copied to clipboard successfully.',
+                  title: 'Statement Copied! 📋',
+                  message: 'Clean merchant statement formatted and copied to clipboard. You can paste it into WhatsApp, Notes, or Email.',
+                );
+              }
+            },
+          ),
+          CupertinoActionSheetAction(
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(CupertinoIcons.square_grid_2x2, size: 18, color: IosColors.systemGreen),
+                SizedBox(width: 8),
+                Text('Copy for Excel / Google Sheets'),
+              ],
+            ),
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              final tsv = await TransactionHistoryService.exportExcelTable(
+                creditedOnly: _selectedSegment == 1,
+              );
+              await Clipboard.setData(ClipboardData(text: tsv));
+              if (mounted) {
+                _showIosAlert(
+                  title: 'Excel Table Copied! 📊',
+                  message: 'Tab-delimited table copied to clipboard. Paste directly into Google Sheets or Microsoft Excel to get organized columns.',
                 );
               }
             },
@@ -128,6 +167,278 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
         cancelButton: CupertinoActionSheetAction(
           child: const Text('Cancel'),
           onPressed: () => Navigator.of(ctx).pop(),
+        ),
+      ),
+    );
+  }
+
+  void _showMerchantStatementTableDialog() {
+    final List<TransactionLog> statementLogs = _filteredLogs;
+    final double totalNet = statementLogs
+        .where((l) => l.status == TransactionStatus.forwarded)
+        .fold(0.0, (sum, l) => sum + l.amount);
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        height: MediaQuery.of(ctx).size.height * 0.88,
+        decoration: const BoxDecoration(
+          color: Color(0xFF1C1C1E),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Grab handle
+              Center(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(vertical: 10),
+                  width: 40,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2.5),
+                  ),
+                ),
+              ),
+
+              // Title Header matching Screenshot 2
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'UPI Transactions Merchant Statement',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'Statement Date: ${TransactionHistoryService.formatTxnDate(DateTime.now(), withTime: false)} | ${statementLogs.length} Entries',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(CupertinoIcons.xmark_circle_fill, color: Colors.white38),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+              ),
+
+              const Divider(color: Colors.white12, height: 1),
+
+              // Scrollable Table exactly matching Screenshot 2
+              Expanded(
+                child: statementLogs.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'No transaction logs found',
+                          style: TextStyle(color: Colors.white54, fontSize: 14),
+                        ),
+                      )
+                    : Scrollbar(
+                        thumbVisibility: true,
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: SingleChildScrollView(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Table Header matching Screenshot 2 (Gold/Yellow banner)
+                                Container(
+                                  color: const Color(0xFFFFC107),
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  child: Row(
+                                    children: [
+                                      _buildTableCell('TXN DT', width: 105, isHeader: true),
+                                      _buildTableCell('PAYER', width: 145, isHeader: true),
+                                      _buildTableCell('RRN', width: 120, isHeader: true),
+                                      _buildTableCell('TXN AMT', width: 95, isHeader: true, alignRight: true),
+                                      _buildTableCell('MDR', width: 55, isHeader: true, alignRight: true),
+                                      _buildTableCell('GST', width: 55, isHeader: true, alignRight: true),
+                                      _buildTableCell('NET AMT', width: 95, isHeader: true, alignRight: true),
+                                      _buildTableCell('REMARKS', width: 155, isHeader: true),
+                                    ],
+                                  ),
+                                ),
+
+                                // Table Rows
+                                ...statementLogs.asMap().entries.map((entry) {
+                                  final int index = entry.key;
+                                  final TransactionLog log = entry.value;
+                                  final Color rowColor = index.isEven
+                                      ? const Color(0xFF242426)
+                                      : const Color(0xFF1E1E20);
+
+                                  final String txnDt = TransactionHistoryService.formatTxnDate(log.timestamp);
+                                  final String payer = log.sender.isNotEmpty ? log.sender : 'Unknown';
+                                  final String rrn = log.txnId.isNotEmpty ? log.txnId : '-';
+                                  final String amt = TransactionHistoryService.formatCurrency(log.amount);
+                                  final String remarks = log.status == TransactionStatus.forwarded
+                                      ? 'Payment from UPI'
+                                      : log.statusReason;
+
+                                  return Container(
+                                    color: rowColor,
+                                    padding: const EdgeInsets.symmetric(vertical: 7),
+                                    child: Row(
+                                      children: [
+                                        _buildTableCell(txnDt, width: 105),
+                                        _buildTableCell(payer, width: 145),
+                                        _buildTableCell(rrn, width: 120),
+                                        _buildTableCell(amt, width: 95, alignRight: true),
+                                        _buildTableCell('0.00', width: 55, alignRight: true),
+                                        _buildTableCell('0.00', width: 55, alignRight: true),
+                                        _buildTableCell(amt, width: 95, alignRight: true),
+                                        _buildTableCell(remarks, width: 155),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
+
+              const Divider(color: Colors.white12, height: 1),
+
+              // Bottom Total & Action Bar
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: const Color(0xFF18181A),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'TOTAL NET AMOUNT:',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          '₹${TransactionHistoryService.formatCurrency(totalNet)}',
+                          style: const TextStyle(
+                            color: Color(0xFF4ADE80),
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFFFC107),
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            icon: const Icon(CupertinoIcons.square_grid_2x2, size: 16),
+                            label: const Text(
+                              'Copy for Excel',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            onPressed: () async {
+                              final tsv = await TransactionHistoryService.exportExcelTable();
+                              await Clipboard.setData(ClipboardData(text: tsv));
+                              if (context.mounted) {
+                                Navigator.of(ctx).pop();
+                                _showIosAlert(
+                                  title: 'Excel Table Copied! 📊',
+                                  message: 'Paste directly into Google Sheets or Excel to get columns matching this table.',
+                                );
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: Colors.white24),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            icon: const Icon(CupertinoIcons.doc_text, size: 16),
+                            label: const Text(
+                              'Copy Text',
+                              style: TextStyle(fontSize: 13),
+                            ),
+                            onPressed: () async {
+                              final text = await TransactionHistoryService.exportCleanStatementText();
+                              await Clipboard.setData(ClipboardData(text: text));
+                              if (context.mounted) {
+                                Navigator.of(ctx).pop();
+                                _showIosAlert(
+                                  title: 'Statement Copied! 📋',
+                                  message: 'Clean text statement copied to clipboard for WhatsApp/Email.',
+                                );
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTableCell(
+    String text, {
+    required double width,
+    bool isHeader = false,
+    bool alignRight = false,
+  }) {
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      alignment: alignRight ? Alignment.centerRight : Alignment.centerLeft,
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        textAlign: alignRight ? TextAlign.right : TextAlign.left,
+        style: TextStyle(
+          color: isHeader ? Colors.black : Colors.white.withValues(alpha: 0.9),
+          fontWeight: isHeader ? FontWeight.bold : FontWeight.w500,
+          fontSize: isHeader ? 11 : 12,
         ),
       ),
     );

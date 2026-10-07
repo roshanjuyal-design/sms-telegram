@@ -73,18 +73,149 @@ class TransactionHistoryService {
     }
   }
 
+  /// Format amount in standard currency style with commas (e.g. 13,750.00)
+  static String formatCurrency(double amount) {
+    final String str = amount.toStringAsFixed(2);
+    final parts = str.split('.');
+    String whole = parts[0];
+    final String dec = parts.length > 1 ? parts[1] : '00';
+
+    if (whole.length > 3) {
+      final String lastThree = whole.substring(whole.length - 3);
+      String remaining = whole.substring(0, whole.length - 3);
+      final reg = RegExp(r'(\d+?)(?=(\d{2})+(?!\d))');
+      remaining = remaining.replaceAllMapped(reg, (Match m) => '${m[1]},');
+      whole = '$remaining,$lastThree';
+    }
+    return '$whole.$dec';
+  }
+
+  /// Format date as DD-MM-YYYY HH:mm or DD-MM-YYYY
+  static String formatTxnDate(DateTime dt, {bool withTime = true}) {
+    final day = dt.day.toString().padLeft(2, '0');
+    final month = dt.month.toString().padLeft(2, '0');
+    final year = dt.year.toString();
+    if (!withTime) {
+      return '$day-$month-$year';
+    }
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$day-$month-$year $hour:$minute';
+  }
+
+  /// Export as clean Merchant Statement Text (clean format for WhatsApp, Email, Notes)
+  static Future<String> exportCleanStatementText({bool creditedOnly = false}) async {
+    var logs = await getLogs();
+    if (creditedOnly) {
+      logs = logs.where((l) => l.status == TransactionStatus.forwarded).toList();
+    }
+
+    final double totalCredited = logs
+        .where((l) => l.status == TransactionStatus.forwarded)
+        .fold(0.0, (sum, l) => sum + l.amount);
+
+    final String dateStr = formatTxnDate(DateTime.now(), withTime: false);
+    final StringBuffer sb = StringBuffer();
+
+    sb.writeln('════════════════════════════════════════════════════════════');
+    sb.writeln('            UPI TRANSACTIONS MERCHANT STATEMENT            ');
+    sb.writeln('════════════════════════════════════════════════════════════');
+    sb.writeln('Statement Date : $dateStr');
+    sb.writeln('Total Entries  : ${logs.length}');
+    sb.writeln('Total Credited : ₹${formatCurrency(totalCredited)}');
+    sb.writeln('────────────────────────────────────────────────────────────\n');
+
+    if (logs.isEmpty) {
+      sb.writeln('No transaction records found.\n');
+    } else {
+      for (int i = 0; i < logs.length; i++) {
+        final log = logs[i];
+        final String dt = formatTxnDate(log.timestamp);
+        final String payer = log.sender.isNotEmpty ? log.sender : 'Unknown';
+        final String rrn = log.txnId.isNotEmpty ? log.txnId : '-';
+        final String amt = '₹${formatCurrency(log.amount)}';
+        final String status = log.status == TransactionStatus.forwarded
+            ? 'Credited (UPI Payment)'
+            : 'Filtered (${log.statusReason})';
+
+        sb.writeln('${i + 1}. TXN DT  : $dt');
+        sb.writeln('   PAYER   : $payer');
+        sb.writeln('   RRN     : $rrn');
+        sb.writeln('   TXN AMT : $amt');
+        sb.writeln('   NET AMT : $amt');
+        sb.writeln('   REMARKS : $status');
+        sb.writeln('────────────────────────────────────────────────────────────');
+      }
+    }
+
+    sb.writeln('\n============================================================');
+    sb.writeln('TOTAL RECEIVED: ₹${formatCurrency(totalCredited)}');
+    sb.writeln('============================================================');
+
+    return sb.toString();
+  }
+
+  /// Export as Tab-Delimited Table matching Screenshot 2 (TXN DT, PAYER, RRN, TXN AMT, MDR, GST, NET AMT, REMARKS)
+  /// Pastes directly into Excel / Google Sheets with proper columns!
+  static Future<String> exportExcelTable({bool creditedOnly = false}) async {
+    var logs = await getLogs();
+    if (creditedOnly) {
+      logs = logs.where((l) => l.status == TransactionStatus.forwarded).toList();
+    }
+
+    final StringBuffer sb = StringBuffer();
+    // Headers matching Screenshot 2
+    sb.writeln('TXN DT\tPAYER\tRRN\tTXN AMT\tMDR\tGST\tNET AMT\tREMARKS');
+
+    for (final log in logs) {
+      final String dt = formatTxnDate(log.timestamp);
+      final String payer = log.sender.isNotEmpty ? log.sender : 'Unknown';
+      final String rrn = log.txnId.isNotEmpty ? log.txnId : '-';
+      final String amt = formatCurrency(log.amount);
+      const String mdr = '0.00';
+      const String gst = '0.00';
+      final String netAmt = amt;
+      final String remarks = log.status == TransactionStatus.forwarded
+          ? 'Payment from PhonePe / UPI'
+          : log.statusReason;
+
+      sb.writeln('$dt\t$payer\t$rrn\t$amt\t$mdr\t$gst\t$netAmt\t$remarks');
+    }
+
+    return sb.toString();
+  }
+
+  /// Export as Clean CSV matching Screenshot 2 columns
+  static Future<String> exportCleanCsv({bool creditedOnly = false}) async {
+    var logs = await getLogs();
+    if (creditedOnly) {
+      logs = logs.where((l) => l.status == TransactionStatus.forwarded).toList();
+    }
+
+    final StringBuffer sb = StringBuffer();
+    sb.writeln('TXN DT,PAYER,RRN,TXN AMT,MDR,GST,NET AMT,REMARKS');
+
+    for (final log in logs) {
+      final String dt = formatTxnDate(log.timestamp);
+      final String payer = (log.sender.isNotEmpty ? log.sender : 'Unknown').replaceAll('"', '""');
+      final String rrn = (log.txnId.isNotEmpty ? log.txnId : '-').replaceAll('"', '""');
+      final String amt = formatCurrency(log.amount);
+      const String mdr = '0.00';
+      const String gst = '0.00';
+      final String netAmt = amt;
+      final String remarks = (log.status == TransactionStatus.forwarded
+          ? 'Payment from PhonePe / UPI'
+          : log.statusReason).replaceAll('"', '""');
+
+      sb.writeln('"$dt","$payer","$rrn","$amt","$mdr","$gst","$netAmt","$remarks"');
+    }
+
+    return sb.toString();
+  }
+
   /// Export transaction logs as CSV formatted string
   static Future<String> exportLogsAsCsv() async {
-    final logs = await getLogs();
-    final StringBuffer sb = StringBuffer();
-    sb.writeln('ID,Timestamp,Status,Amount,Sender,TxnID,Bank,Reason,RawSMS');
-    for (final log in logs) {
-      final String safeRaw = log.rawBody.replaceAll('"', '""').replaceAll('\n', ' ');
-      final String safeReason = log.statusReason.replaceAll('"', '""');
-      final String statusStr = log.status.name;
-      sb.writeln('"${log.id}","${log.timestamp.toIso8601String()}","$statusStr","${log.formattedAmount}","${log.sender}","${log.txnId}","${log.bank}","$safeReason","$safeRaw"');
-    }
-    return sb.toString();
+    return exportCleanCsv();
   }
 
   /// Helper to parse SMS text and create a structured TransactionLog

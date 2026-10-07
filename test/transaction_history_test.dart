@@ -125,5 +125,43 @@ void main() {
       logs = await TransactionHistoryService.getLogs();
       expect(logs.isEmpty, isTrue);
     });
+
+    test('formats currency and dates accurately', () {
+      expect(TransactionHistoryService.formatCurrency(6000.0), '6,000.00');
+      expect(TransactionHistoryService.formatCurrency(13750.0), '13,750.00');
+      expect(TransactionHistoryService.formatCurrency(90000.0), '90,000.00');
+      expect(TransactionHistoryService.formatCurrency(490.0), '490.00');
+
+      final dt = DateTime(2026, 10, 7, 15, 31);
+      expect(TransactionHistoryService.formatTxnDate(dt), '07-10-2026 15:31');
+    });
+
+    test('generates clean merchant statement text and Excel table matching Screenshot 2', () async {
+      final log = TransactionLog(
+        id: '1',
+        sender: '9676271296-2@ybl',
+        rawBody: 'UPI payment of Rs. 13750 received...',
+        amount: 13750.0,
+        formattedAmount: '13750',
+        txnId: '099755675527',
+        bank: 'Union Bank of India',
+        status: TransactionStatus.forwarded,
+        statusReason: 'Payment from UPI',
+        timestamp: DateTime(2026, 10, 7, 15, 31),
+        isCredit: true,
+      );
+
+      await TransactionHistoryService.addLog(log);
+
+      final statementText = await TransactionHistoryService.exportCleanStatementText();
+      expect(statementText, contains('UPI TRANSACTIONS MERCHANT STATEMENT'));
+      expect(statementText, contains('PAYER   : 9676271296-2@ybl'));
+      expect(statementText, contains('RRN     : 099755675527'));
+      expect(statementText, contains('TXN AMT : ₹13,750.00'));
+
+      final excelTable = await TransactionHistoryService.exportExcelTable();
+      expect(excelTable, contains('TXN DT\tPAYER\tRRN\tTXN AMT\tMDR\tGST\tNET AMT\tREMARKS'));
+      expect(excelTable, contains('07-10-2026 15:31\t9676271296-2@ybl\t099755675527\t13,750.00\t0.00\t0.00\t13,750.00\tPayment from PhonePe / UPI'));
+    });
   });
 }
