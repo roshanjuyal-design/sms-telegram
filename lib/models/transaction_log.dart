@@ -4,6 +4,7 @@ enum TransactionStatus {
   forwarded,
   filtered,
   failed,
+  duplicate,
 }
 
 class TransactionLog {
@@ -73,6 +74,8 @@ class TransactionLog {
         return TransactionStatus.filtered;
       case 'failed':
         return TransactionStatus.failed;
+      case 'duplicate':
+        return TransactionStatus.duplicate;
       default:
         return TransactionStatus.forwarded;
     }

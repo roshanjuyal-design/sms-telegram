@@ -1,9 +1,11 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import '../services/app_lock_service.dart';
 import '../services/battery_helper_service.dart';
 import '../services/soundbox_service.dart';
 import '../services/update_service.dart';
 import '../theme/ios_theme.dart';
+import 'app_lock_screen.dart';
 import 'ios_monitor_screen.dart';
 import 'settings_screen.dart';
 import 'soundbox_screen.dart';
@@ -23,6 +25,7 @@ class MainIosShell extends StatefulWidget {
 class _MainIosShellState extends State<MainIosShell> with WidgetsBindingObserver {
   late CupertinoTabController _tabController;
   int _currentIndex = 0;
+  bool _isLocked = true;
 
   @override
   void initState() {
@@ -32,6 +35,20 @@ class _MainIosShellState extends State<MainIosShell> with WidgetsBindingObserver
     _tabController.addListener(_onTabChanged);
     WidgetsBinding.instance.addObserver(this);
     _initAppServices();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _checkLockOnPause();
+    }
+  }
+
+  Future<void> _checkLockOnPause() async {
+    final lockEnabled = await AppLockService.isLockEnabled();
+    if (lockEnabled && mounted) {
+      setState(() => _isLocked = true);
+    }
   }
 
   void _onTabChanged() {
@@ -51,6 +68,15 @@ class _MainIosShellState extends State<MainIosShell> with WidgetsBindingObserver
   }
 
   Future<void> _initAppServices() async {
+    try {
+      final lockEnabled = await AppLockService.isLockEnabled();
+      if (mounted) {
+        setState(() => _isLocked = lockEnabled);
+      }
+    } catch (e) {
+      debugPrint('Error checking app lock: $e');
+    }
+
     await _requestPermissions();
     await _startForegroundService();
     await BatteryHelperService.startHeartbeatTimer();
@@ -109,6 +135,14 @@ class _MainIosShellState extends State<MainIosShell> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
+    if (_isLocked) {
+      return AppLockScreen(
+        onUnlocked: () {
+          setState(() => _isLocked = false);
+        },
+      );
+    }
+
     return CupertinoTabScaffold(
       controller: _tabController,
       tabBar: CupertinoTabBar(

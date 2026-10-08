@@ -28,7 +28,7 @@ subprojects {
         afterEvaluate {
             plugins.withId("com.android.library") {
                 configure<com.android.build.gradle.LibraryExtension> {
-                    compileSdk = 34
+                    compileSdk = 36
                     compileOptions {
                         sourceCompatibility = JavaVersion.VERSION_1_8
                         targetCompatibility = JavaVersion.VERSION_1_8

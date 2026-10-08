@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.sms_to_telegram"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -699,12 +699,16 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                     Text(
                       log.status == TransactionStatus.forwarded
                           ? '₹${log.formattedAmount}'
-                          : 'SMS Log',
+                          : (log.status == TransactionStatus.duplicate
+                              ? '₹${log.formattedAmount} (Duplicate)'
+                              : 'SMS Log'),
                       style: TextStyle(
                         color: log.status == TransactionStatus.forwarded
                             ? IosColors.systemGreen
-                            : IosColors.label,
-                        fontSize: 26,
+                            : (log.status == TransactionStatus.duplicate
+                                ? IosColors.systemOrange
+                                : IosColors.label),
+                        fontSize: 24,
                         fontWeight: FontWeight.bold,
                         letterSpacing: -0.5,
                       ),
@@ -714,15 +718,23 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                       decoration: BoxDecoration(
                         color: log.status == TransactionStatus.forwarded
                             ? IosColors.systemGreen.withValues(alpha: 0.15)
-                            : IosColors.secondaryLabel.withValues(alpha: 0.15),
+                            : (log.status == TransactionStatus.duplicate
+                                ? IosColors.systemOrange.withValues(alpha: 0.18)
+                                : IosColors.secondaryLabel.withValues(alpha: 0.15)),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        log.status == TransactionStatus.forwarded ? 'Credited' : 'Filtered',
+                        log.status == TransactionStatus.forwarded
+                            ? 'Credited'
+                            : (log.status == TransactionStatus.duplicate
+                                ? '⚠️ Duplicate'
+                                : 'Filtered'),
                         style: TextStyle(
                           color: log.status == TransactionStatus.forwarded
                             ? IosColors.systemGreen
-                            : IosColors.secondaryLabel,
+                            : (log.status == TransactionStatus.duplicate
+                                ? IosColors.systemOrange
+                                : IosColors.secondaryLabel),
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
@@ -1197,6 +1209,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                     (context, index) {
                       final log = logsList[index];
                       final isCredited = log.status == TransactionStatus.forwarded;
+                      final isDuplicate = log.status == TransactionStatus.duplicate;
 
                       return IosGroupedCard(
                         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1210,14 +1223,20 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                               decoration: BoxDecoration(
                                 color: isCredited
                                     ? IosColors.systemGreen.withValues(alpha: 0.15)
-                                    : IosColors.tertiaryBackground,
+                                    : (isDuplicate
+                                        ? IosColors.systemOrange.withValues(alpha: 0.18)
+                                        : IosColors.tertiaryBackground),
                                 shape: BoxShape.circle,
                               ),
                               child: Icon(
                                 isCredited
                                     ? CupertinoIcons.money_dollar
-                                    : CupertinoIcons.chat_bubble_text,
-                                color: isCredited ? IosColors.systemGreen : IosColors.secondaryLabel,
+                                    : (isDuplicate
+                                        ? CupertinoIcons.exclamationmark_triangle_fill
+                                        : CupertinoIcons.chat_bubble_text),
+                                color: isCredited
+                                    ? IosColors.systemGreen
+                                    : (isDuplicate ? IosColors.systemOrange : IosColors.secondaryLabel),
                                 size: 20,
                               ),
                             ),
@@ -1232,9 +1251,11 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                                         child: Text(
                                           isCredited
                                               ? (log.sender.isNotEmpty ? log.sender : 'Union Bank Credit')
-                                              : (log.sender.isNotEmpty ? log.sender : 'SMS Message'),
-                                          style: const TextStyle(
-                                            color: IosColors.label,
+                                              : (isDuplicate
+                                                  ? '${log.sender.isNotEmpty ? log.sender : 'Payment'} (Duplicate)'
+                                                  : (log.sender.isNotEmpty ? log.sender : 'SMS Message')),
+                                          style: TextStyle(
+                                            color: isDuplicate ? IosColors.systemOrange : IosColors.label,
                                             fontSize: 15,
                                             fontWeight: FontWeight.w600,
                                             letterSpacing: -0.3,
@@ -1244,9 +1265,13 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                                         ),
                                       ),
                                       Text(
-                                        isCredited ? '+₹${log.formattedAmount}' : 'Filtered',
+                                        isCredited
+                                            ? '+₹${log.formattedAmount}'
+                                            : (isDuplicate ? '⚠️ Duplicate' : 'Filtered'),
                                         style: TextStyle(
-                                          color: isCredited ? IosColors.systemGreen : IosColors.secondaryLabel,
+                                          color: isCredited
+                                              ? IosColors.systemGreen
+                                              : (isDuplicate ? IosColors.systemOrange : IosColors.secondaryLabel),
                                           fontSize: 15,
                                           fontWeight: FontWeight.bold,
                                           letterSpacing: -0.3,

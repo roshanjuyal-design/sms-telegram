@@ -9,7 +9,7 @@ void main() {
   const MethodChannel channel = MethodChannel('com.example.sms_to_telegram/sms');
 
   setUp(() {
-    SharedPreferences.setMockInitialValues({});
+    SharedPreferences.setMockInitialValues({'app_lock_enabled': false});
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
       switch (methodCall.method) {
@@ -48,6 +48,28 @@ void main() {
     expect(find.text('24/7 Monitoring'), findsOneWidget);
     expect(find.text('Developed by Roshan Juyal'), findsOneWidget);
     expect(find.text('Test Payment Alert & Voice'), findsOneWidget);
+  });
+
+  testWidgets('AppLockScreen prompts for passcode and unlocks with 5440', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({'app_lock_enabled': true});
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('InyaTech Security'), findsOneWidget);
+    expect(find.text('Enter 4-digit Passcode to access terminal'), findsOneWidget);
+
+    // Enter digits 5, 4, 4, 0
+    await tester.tap(find.text('5'));
+    await tester.pump();
+    await tester.tap(find.text('4'));
+    await tester.pump();
+    await tester.tap(find.text('4'));
+    await tester.pump();
+    await tester.tap(find.text('0'));
+    await tester.pumpAndSettle();
+
+    // Unlocks and reveals main UI
+    expect(find.text('Monitor'), findsOneWidget);
   });
 
   group('parsePaymentSms tests', () {

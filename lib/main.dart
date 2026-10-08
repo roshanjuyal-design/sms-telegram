@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'models/transaction_log.dart';
 import 'screens/main_ios_shell.dart';
+import 'services/eod_report_service.dart';
 import 'services/offline_queue_service.dart';
 import 'services/settings_service.dart';
 import 'services/soundbox_service.dart';
@@ -217,12 +219,8 @@ bool shouldForwardSms(String body, [String sender = '']) {
   return true;
 }
 
-/// Handler for new SMS messages received in foreground/active state.
-Future<void> onNewMessage(dynamic body, [String sender = '']) async {
-  final String smsBody = body is String
-      ? body
-      : (body?.body as String? ?? body.toString());
-
+/// Unified processor for incoming SMS with Duplicate UTR / Fraud detection
+Future<void> processPaymentSms(String smsBody, String sender, {required bool isBackground}) async {
   if (shouldForwardSms(smsBody, sender)) {
     final String parsedMessage = parsePaymentSms(smsBody);
 
@@ -235,6 +233,53 @@ Future<void> onNewMessage(dynamic body, [String sender = '']) async {
     final String fromSender = senderRegex.firstMatch(smsBody)?.group(1) ?? sender;
     final String txnId = txnRegex.firstMatch(smsBody)?.group(1) ?? '';
 
+    // 1. Check for Duplicate UTR / Fraud detection
+    if (txnId.isNotEmpty) {
+      final existingLog = await TransactionHistoryService.findExistingTxn(txnId);
+      if (existingLog != null) {
+        final String prevTime = TransactionHistoryService.formatTxnDate(existingLog.timestamp);
+        final String duplicateAlertMessage =
+            '🚨 *FRAUD / DUPLICATE UTR ALERT!* 🚨\n\n'
+            '⚠️ *Duplicate Transaction Detected!*\n'
+            '🆔 *UTR / Txn ID:* `$txnId`\n'
+            '💵 *Amount Claimed:* ₹$amount\n'
+            '👤 *Sender:* $fromSender\n\n'
+            '🕒 *Original Credit Date:* $prevTime (₹${existingLog.formattedAmount})\n'
+            '⛔ *CAUTION:* Do NOT hand over goods/cash without checking bank statement!\n\n'
+            '📩 *Raw SMS:* $smsBody';
+
+        await sendToTelegram(
+          duplicateAlertMessage,
+          rawSms: smsBody,
+          sender: fromSender,
+          amount: amount,
+          txnId: txnId,
+        );
+
+        await TransactionHistoryService.addLog(
+          TransactionLog(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            sender: fromSender,
+            rawBody: smsBody,
+            amount: double.tryParse(amount.replaceAll(',', '')) ?? 0.0,
+            formattedAmount: amount,
+            txnId: txnId,
+            bank: 'Union Bank of India',
+            status: TransactionStatus.duplicate,
+            statusReason: '⚠️ Duplicate UTR: Already credited on $prevTime',
+            timestamp: DateTime.now(),
+            isCredit: false,
+          ),
+        );
+
+        // Soundbox loud duplicate warning
+        if (amount.isNotEmpty) {
+          await SoundboxService.announceDuplicate(amount: amount);
+        }
+        return;
+      }
+    }
+
     final bool sent = await sendToTelegram(
       parsedMessage,
       rawSms: smsBody,
@@ -250,8 +295,8 @@ Future<void> onNewMessage(dynamic body, [String sender = '']) async {
         sender: sender,
         isForwarded: sent,
         statusReason: sent
-            ? 'Forwarded to Telegram & Soundbox'
-            : 'Saved to Offline Queue (Will auto-retry when network is available)',
+            ? (isBackground ? 'Background Forwarded to Telegram' : 'Forwarded to Telegram & Soundbox')
+            : (isBackground ? 'Background Offline Queue: Will auto-retry on reconnect' : 'Saved to Offline Queue (Will auto-retry when network is available)'),
       ),
     );
 
@@ -264,16 +309,26 @@ Future<void> onNewMessage(dynamic body, [String sender = '']) async {
       );
     }
   } else {
-    debugPrint('SMS filtered out: [$sender] $smsBody');
+    debugPrint('${isBackground ? 'Background SMS' : 'SMS'} filtered out: [$sender] $smsBody');
     await TransactionHistoryService.addLog(
       TransactionHistoryService.createLogFromSms(
         rawBody: smsBody,
         sender: sender,
         isForwarded: false,
-        statusReason: 'Filtered: Non-credit / OTP / Non-UBI message',
+        statusReason: isBackground
+            ? 'Filtered: Background Non-credit SMS'
+            : 'Filtered: Non-credit / OTP / Non-UBI message',
       ),
     );
   }
+}
+
+/// Handler for new SMS messages received in foreground/active state.
+Future<void> onNewMessage(dynamic body, [String sender = '']) async {
+  final String smsBody = body is String
+      ? body
+      : (body?.body as String? ?? body.toString());
+  await processPaymentSms(smsBody, sender, isBackground: false);
 }
 
 /// Handler for background SMS messages.
@@ -282,57 +337,7 @@ Future<void> onBackgroundMessage(dynamic body, [String sender = '']) async {
   final String smsBody = body is String
       ? body
       : (body?.body as String? ?? body.toString());
-
-  if (shouldForwardSms(smsBody, sender)) {
-    final String parsedMessage = parsePaymentSms(smsBody);
-
-    final RegExp amountRegex = RegExp(r'(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d+)?)', caseSensitive: false);
-    final RegExp senderRegex = RegExp(r'(?:received from|from)\s+([^\s,:]+)', caseSensitive: false);
-    final RegExp txnRegex = RegExp(r'(?:transaction\s*ID|Txn\s*ID|Ref(?:\s*No)?|UPI\s*Ref)[:\s]+([a-zA-Z0-9]+)', caseSensitive: false);
-
-    final String amount = amountRegex.firstMatch(smsBody)?.group(1) ?? '';
-    final String fromSender = senderRegex.firstMatch(smsBody)?.group(1) ?? sender;
-    final String txnId = txnRegex.firstMatch(smsBody)?.group(1) ?? '';
-
-    final bool sent = await sendToTelegram(
-      parsedMessage,
-      rawSms: smsBody,
-      sender: fromSender,
-      amount: amount,
-      txnId: txnId,
-    );
-
-    // Save to Transaction History
-    await TransactionHistoryService.addLog(
-      TransactionHistoryService.createLogFromSms(
-        rawBody: smsBody,
-        sender: sender,
-        isForwarded: sent,
-        statusReason: sent
-            ? 'Background Forwarded to Telegram'
-            : 'Background Offline Queue: Will auto-retry on reconnect',
-      ),
-    );
-
-    // Announce via Voice Soundbox in background
-    if (amount.isNotEmpty) {
-      await SoundboxService.announcePayment(
-        amount: amount,
-        sender: fromSender,
-        bank: 'Union Bank',
-      );
-    }
-  } else {
-    debugPrint('Background SMS filtered out: [$sender] $smsBody');
-    await TransactionHistoryService.addLog(
-      TransactionHistoryService.createLogFromSms(
-        rawBody: smsBody,
-        sender: sender,
-        isForwarded: false,
-        statusReason: 'Filtered: Background Non-credit SMS',
-      ),
-    );
-  }
+  await processPaymentSms(smsBody, sender, isBackground: true);
 }
 
 void setupSmsListener() {
@@ -353,6 +358,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   setupSmsListener();
   OfflineQueueService.startWatchdog();
+  EodReportService.startScheduler();
   runApp(const MyApp());
 }
 

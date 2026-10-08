@@ -254,6 +254,37 @@ class SoundboxService {
     }
   }
 
+  /// Loud warning announcement when a duplicate/fraud transaction is detected
+  static Future<void> announceDuplicate({required String amount}) async {
+    final enabled = await isEnabled();
+    if (!enabled) return;
+
+    await init();
+
+    final language = await getLanguage();
+    String alertText;
+
+    if (language == langTelugu) {
+      alertText = 'హెచ్చరిక! ఈ లావాదేవీ నెంబర్ ఇంతకుముందే జమ అయ్యింది! డూప్లికేట్ పేమెంట్!';
+    } else if (language == langHindi) {
+      alertText = 'चेतावनी! यह ट्रांजेक्शन नंबर पहले ही प्राप्त हो चुका है! डुप्लीकेट पेमेंट!';
+    } else {
+      alertText = 'Warning! Duplicate transaction detected! This payment reference was already received earlier!';
+    }
+
+    try {
+      await _flutterTts.stop();
+      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setSpeechRate(0.5);
+      await _flutterTts.setPitch(1.0);
+      await _flutterTts.setLanguage(language);
+      await _flutterTts.speak(alertText);
+      debugPrint('Soundbox duplicate alert announced: "$alertText"');
+    } catch (e) {
+      debugPrint('Error speaking duplicate alert in Soundbox: $e');
+    }
+  }
+
   /// Test current Soundbox configuration with a sample announcement
   static Future<void> testAnnouncement({
     String? customLanguage,

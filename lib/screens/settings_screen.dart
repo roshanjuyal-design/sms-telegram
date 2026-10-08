@@ -1,7 +1,9 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../models/telegram_recipient.dart';
+import '../services/app_lock_service.dart';
 import '../services/battery_helper_service.dart';
+import '../services/eod_report_service.dart';
 import '../services/settings_service.dart';
 import '../services/update_service.dart';
 import '../theme/ios_theme.dart';
@@ -27,6 +29,16 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
   bool _isCheckingUpdate = false;
   String _githubRepo = UpdateService.defaultRepo;
   bool _hasGithubToken = false;
+
+  bool _isEodEnabled = true;
+  int _eodHour = 23;
+  int _eodMinute = 59;
+  String? _lastEodSentDate;
+  bool _isSendingTestEod = false;
+
+  bool _isLockEnabled = true;
+  bool _isBiometricsEnabled = true;
+  bool _canUseBiometrics = false;
 
   List<TelegramRecipient> _recipients = [];
 
@@ -66,6 +78,13 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     final interval = await BatteryHelperService.getHeartbeatIntervalMinutes();
     final repo = await UpdateService.getGithubRepo();
     final ghToken = await UpdateService.getGithubToken();
+    final isEod = await EodReportService.isEodEnabled();
+    final eHour = await EodReportService.getEodHour();
+    final eMin = await EodReportService.getEodMinute();
+    final lastEod = await EodReportService.getLastSentDate();
+    final isLock = await AppLockService.isLockEnabled();
+    final isBio = await AppLockService.isBiometricsEnabled();
+    final canBio = await AppLockService.canUseBiometrics();
 
     _botTokenController.text = token;
     if (mounted) {
@@ -75,6 +94,13 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
         _heartbeatInterval = interval;
         _githubRepo = repo;
         _hasGithubToken = ghToken.isNotEmpty;
+        _isEodEnabled = isEod;
+        _eodHour = eHour;
+        _eodMinute = eMin;
+        _lastEodSentDate = lastEod;
+        _isLockEnabled = isLock;
+        _isBiometricsEnabled = isBio;
+        _canUseBiometrics = canBio;
         _isLoading = false;
       });
     }
@@ -398,6 +424,194 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     );
   }
 
+  String _formatEodTime(int hour, int minute) {
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final h12 = hour % 12 == 0 ? 12 : hour % 12;
+    final mStr = minute.toString().padLeft(2, '0');
+    return '$h12:$mStr $period';
+  }
+
+  Future<void> _toggleEod(bool value) async {
+    await EodReportService.setEodEnabled(value);
+    setState(() => _isEodEnabled = value);
+  }
+
+  Future<void> _pickEodTime() async {
+    Duration tempDuration = Duration(hours: _eodHour, minutes: _eodMinute);
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (ctx) => Container(
+        height: 280,
+        color: IosColors.secondaryBackground,
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Container(
+                color: IosColors.tertiaryBackground,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: const Text('Cancel', style: TextStyle(color: IosColors.systemRed)),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                    const Text('EOD Report Time', style: TextStyle(color: IosColors.label, fontWeight: FontWeight.bold, fontSize: 16)),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: const Text('Done', style: TextStyle(color: IosColors.systemBlue, fontWeight: FontWeight.bold)),
+                      onPressed: () async {
+                        final h = tempDuration.inHours % 24;
+                        final m = tempDuration.inMinutes % 60;
+                        await EodReportService.setEodTime(h, m);
+                        setState(() {
+                          _eodHour = h;
+                          _eodMinute = m;
+                        });
+                        Navigator.of(ctx).pop();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: CupertinoTimerPicker(
+                  mode: CupertinoTimerPickerMode.hm,
+                  initialTimerDuration: tempDuration,
+                  onTimerDurationChanged: (d) => tempDuration = d,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendTestEodReport() async {
+    setState(() => _isSendingTestEod = true);
+    final result = await EodReportService.sendEodReport(isManualTest: true);
+    if (!mounted) return;
+    setState(() => _isSendingTestEod = false);
+    final sent = result['sent'] ?? 0;
+    final failed = result['failed'] ?? 0;
+    _showIosAlert(
+      title: 'EOD Report Sent! 🌙',
+      message: 'Settlement summary sent to $sent active recipient(s)${failed > 0 ? ' ($failed failed)' : ''}. Check your Telegram chat!',
+    );
+  }
+
+  Future<void> _toggleAppLock(bool value) async {
+    await AppLockService.setLockEnabled(value);
+    setState(() => _isLockEnabled = value);
+  }
+
+  Future<void> _toggleBiometrics(bool value) async {
+    await AppLockService.setBiometricsEnabled(value);
+    setState(() => _isBiometricsEnabled = value);
+  }
+
+  Future<void> _showChangePinDialog() async {
+    final currentPinController = TextEditingController();
+    final newPinController = TextEditingController();
+    final confirmPinController = TextEditingController();
+    String error = '';
+
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => CupertinoAlertDialog(
+          title: const Text('Change 4-Digit Passcode'),
+          content: Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Column(
+              children: [
+                const Text(
+                  'Default PIN is 5440.',
+                  style: TextStyle(fontSize: 12, color: IosColors.secondaryLabel),
+                ),
+                const SizedBox(height: 12),
+                CupertinoTextField(
+                  controller: currentPinController,
+                  placeholder: 'Current PIN',
+                  keyboardType: TextInputType.number,
+                  maxLength: 4,
+                  obscureText: true,
+                  style: const TextStyle(color: IosColors.label),
+                  placeholderStyle: const TextStyle(color: IosColors.secondaryLabel),
+                ),
+                const SizedBox(height: 8),
+                CupertinoTextField(
+                  controller: newPinController,
+                  placeholder: 'New 4-Digit PIN',
+                  keyboardType: TextInputType.number,
+                  maxLength: 4,
+                  obscureText: true,
+                  style: const TextStyle(color: IosColors.label),
+                  placeholderStyle: const TextStyle(color: IosColors.secondaryLabel),
+                ),
+                const SizedBox(height: 8),
+                CupertinoTextField(
+                  controller: confirmPinController,
+                  placeholder: 'Confirm New PIN',
+                  keyboardType: TextInputType.number,
+                  maxLength: 4,
+                  obscureText: true,
+                  style: const TextStyle(color: IosColors.label),
+                  placeholderStyle: const TextStyle(color: IosColors.secondaryLabel),
+                ),
+                if (error.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(error, style: const TextStyle(color: IosColors.systemRed, fontSize: 12)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            CupertinoDialogAction(
+              child: const Text('Cancel'),
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+            CupertinoDialogAction(
+              isDefaultAction: true,
+              child: const Text('Save PIN'),
+              onPressed: () async {
+                final cur = currentPinController.text.trim();
+                final nw = newPinController.text.trim();
+                final conf = confirmPinController.text.trim();
+
+                final isCurValid = await AppLockService.verifyPin(cur);
+                if (!isCurValid) {
+                  setDialogState(() => error = 'Incorrect current PIN');
+                  return;
+                }
+                if (nw.length != 4 || int.tryParse(nw) == null) {
+                  setDialogState(() => error = 'New PIN must be 4 digits');
+                  return;
+                }
+                if (nw != conf) {
+                  setDialogState(() => error = 'PINs do not match');
+                  return;
+                }
+
+                await AppLockService.setPin(nw);
+                if (ctx.mounted) {
+                  Navigator.of(ctx).pop();
+                  _showIosAlert(
+                    title: 'PIN Updated! 🔐',
+                    message: 'Your new 4-digit passcode has been saved successfully.',
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -709,7 +923,111 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                       ),
                     ),
 
-                    // Section 4: In-App Updates & GitHub Releases
+                    // Section 4: Night EOD Settlement Report
+                    const IosSectionHeader(title: 'Automatic Night EOD Settlement (Telegram)'),
+                    IosGroupedCard(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Column(
+                        children: [
+                          IosListTile(
+                            leadingIcon: CupertinoIcons.moon_stars_fill,
+                            iconColor: IosColors.systemPurple,
+                            title: 'Auto EOD Settlement Report',
+                            subtitle: 'Sends daily collection summary to Telegram at 11:59 PM',
+                            trailing: CupertinoSwitch(
+                              value: _isEodEnabled,
+                              activeTrackColor: IosColors.systemGreen,
+                              onChanged: _toggleEod,
+                            ),
+                          ),
+                          if (_isEodEnabled) ...[
+                            const IosDivider(indent: 52),
+                            IosListTile(
+                              leadingIcon: CupertinoIcons.clock_fill,
+                              iconColor: IosColors.systemBlue,
+                              title: 'Scheduled Dispatch Time',
+                              subtitle: '${_formatEodTime(_eodHour, _eodMinute)} (Daily)',
+                              showChevron: true,
+                              onTap: _pickEodTime,
+                            ),
+                            const IosDivider(indent: 52),
+                            IosListTile(
+                              leadingIcon: CupertinoIcons.paperplane_fill,
+                              iconColor: IosColors.systemGreen,
+                              title: 'Send Test EOD Report Now',
+                              subtitle: 'Preview today\'s settlement summary on Telegram',
+                              trailing: _isSendingTestEod
+                                  ? const CupertinoActivityIndicator(radius: 8)
+                                  : CupertinoButton(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      color: IosColors.tertiaryBackground,
+                                      borderRadius: BorderRadius.circular(8),
+                                      onPressed: _sendTestEodReport,
+                                      child: const Text('Send Test', style: TextStyle(fontSize: 12, color: IosColors.systemGreen, fontWeight: FontWeight.w600)),
+                                    ),
+                              onTap: _isSendingTestEod ? null : _sendTestEodReport,
+                            ),
+                            const IosDivider(indent: 52),
+                            IosListTile(
+                              leadingIcon: CupertinoIcons.checkmark_seal_fill,
+                              iconColor: IosColors.systemTeal,
+                              title: 'Last Report Status',
+                              subtitle: _lastEodSentDate != null
+                                  ? 'Sent for $_lastEodSentDate'
+                                  : 'Waiting for next schedule (Tonight)',
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    // Section 5: App Security & Passcode Lock (PIN 5440)
+                    const IosSectionHeader(title: 'App Security & Passcode Lock'),
+                    IosGroupedCard(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Column(
+                        children: [
+                          IosListTile(
+                            leadingIcon: CupertinoIcons.lock_shield_fill,
+                            iconColor: IosColors.systemBlue,
+                            title: 'Passcode Protection',
+                            subtitle: 'Require 4-digit PIN (Default: 5440)',
+                            trailing: CupertinoSwitch(
+                              value: _isLockEnabled,
+                              activeTrackColor: IosColors.systemGreen,
+                              onChanged: _toggleAppLock,
+                            ),
+                          ),
+                          if (_isLockEnabled) ...[
+                            const IosDivider(indent: 52),
+                            IosListTile(
+                              leadingIcon: CupertinoIcons.padlock_solid,
+                              iconColor: IosColors.systemOrange,
+                              title: 'Change 4-Digit PIN',
+                              subtitle: 'Current PIN: • • • • (Tap to change)',
+                              showChevron: true,
+                              onTap: _showChangePinDialog,
+                            ),
+                            if (_canUseBiometrics) ...[
+                              const IosDivider(indent: 52),
+                              IosListTile(
+                                leadingIcon: CupertinoIcons.viewfinder,
+                                iconColor: IosColors.systemGreen,
+                                title: 'Biometric Unlock',
+                                subtitle: 'Fingerprint / Face ID unlock',
+                                trailing: CupertinoSwitch(
+                                  value: _isBiometricsEnabled,
+                                  activeTrackColor: IosColors.systemGreen,
+                                  onChanged: _toggleBiometrics,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    // Section 6: In-App Updates & GitHub Releases
                     const IosSectionHeader(title: 'In-App Auto-Updates (GitHub Releases)'),
                     IosGroupedCard(
                       padding: const EdgeInsets.symmetric(vertical: 4),

@@ -58,6 +58,21 @@ class TransactionHistoryService {
     }
   }
 
+  /// Search for an existing transaction with the same UTR / Txn ID
+  /// Ignores empty or short IDs (less than 5 chars)
+  static Future<TransactionLog?> findExistingTxn(String txnId) async {
+    final cleanTxn = txnId.trim();
+    if (cleanTxn.isEmpty || cleanTxn.length < 5) return null;
+    final logs = await getLogs();
+    for (final log in logs) {
+      if (log.txnId.trim().isNotEmpty &&
+          log.txnId.trim().toLowerCase() == cleanTxn.toLowerCase()) {
+        return log;
+      }
+    }
+    return null;
+  }
+
   /// Clear all transaction history logs
   static Future<void> clearLogs() async {
     await clearAllLogs();
@@ -297,6 +312,7 @@ class TransactionHistoryService {
     int totalForwarded = 0;
     int totalFiltered = 0;
     int totalFailed = 0;
+    int totalDuplicates = 0;
 
     for (final log in logs) {
       final isToday = log.timestamp.year == now.year &&
@@ -327,6 +343,8 @@ class TransactionHistoryService {
         }
       } else if (log.status == TransactionStatus.failed) {
         totalFailed++;
+      } else if (log.status == TransactionStatus.duplicate) {
+        totalDuplicates++;
       }
     }
 
@@ -343,6 +361,7 @@ class TransactionHistoryService {
       'forwardedCount': totalForwarded, // Backwards compatible alias
       'totalFiltered': totalFiltered,
       'totalFailed': totalFailed,
+      'totalDuplicates': totalDuplicates,
       'totalLogs': logs.length,
     };
   }
