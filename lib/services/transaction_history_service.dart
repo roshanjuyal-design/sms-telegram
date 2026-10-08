@@ -104,8 +104,11 @@ class TransactionHistoryService {
   }
 
   /// Export as clean Merchant Statement Text (clean format for WhatsApp, Email, Notes)
-  static Future<String> exportCleanStatementText({bool creditedOnly = false}) async {
-    var logs = await getLogs();
+  static Future<String> exportCleanStatementText({
+    bool creditedOnly = false,
+    List<TransactionLog>? customLogs,
+  }) async {
+    var logs = customLogs ?? await getLogs();
     if (creditedOnly) {
       logs = logs.where((l) => l.status == TransactionStatus.forwarded).toList();
     }
@@ -157,8 +160,11 @@ class TransactionHistoryService {
 
   /// Export as Tab-Delimited Table matching Screenshot 2 (TXN DT, PAYER, RRN, TXN AMT, MDR, GST, NET AMT, REMARKS)
   /// Pastes directly into Excel / Google Sheets with proper columns!
-  static Future<String> exportExcelTable({bool creditedOnly = false}) async {
-    var logs = await getLogs();
+  static Future<String> exportExcelTable({
+    bool creditedOnly = false,
+    List<TransactionLog>? customLogs,
+  }) async {
+    var logs = customLogs ?? await getLogs();
     if (creditedOnly) {
       logs = logs.where((l) => l.status == TransactionStatus.forwarded).toList();
     }
@@ -186,8 +192,11 @@ class TransactionHistoryService {
   }
 
   /// Export as Clean CSV matching Screenshot 2 columns
-  static Future<String> exportCleanCsv({bool creditedOnly = false}) async {
-    var logs = await getLogs();
+  static Future<String> exportCleanCsv({
+    bool creditedOnly = false,
+    List<TransactionLog>? customLogs,
+  }) async {
+    var logs = customLogs ?? await getLogs();
     if (creditedOnly) {
       logs = logs.where((l) => l.status == TransactionStatus.forwarded).toList();
     }
@@ -270,14 +279,19 @@ class TransactionHistoryService {
     );
   }
 
-  /// Calculate summary statistics (Today, Total, Counts)
+  /// Calculate summary statistics (Today, Yesterday, All-Time, Counts)
   static Future<Map<String, dynamic>> getStats() async {
     final logs = await getLogs();
     final now = DateTime.now();
+    final yesterday = now.subtract(const Duration(days: 1));
 
     double todayTotal = 0.0;
     int todayForwardedCount = 0;
     int todayFilteredCount = 0;
+
+    double yesterdayTotal = 0.0;
+    int yesterdayForwardedCount = 0;
+    int yesterdayFilteredCount = 0;
 
     double allTimeTotal = 0.0;
     int totalForwarded = 0;
@@ -289,6 +303,10 @@ class TransactionHistoryService {
           log.timestamp.month == now.month &&
           log.timestamp.day == now.day;
 
+      final isYesterday = log.timestamp.year == yesterday.year &&
+          log.timestamp.month == yesterday.month &&
+          log.timestamp.day == yesterday.day;
+
       if (log.status == TransactionStatus.forwarded) {
         allTimeTotal += log.amount;
         totalForwarded++;
@@ -296,11 +314,16 @@ class TransactionHistoryService {
         if (isToday) {
           todayTotal += log.amount;
           todayForwardedCount++;
+        } else if (isYesterday) {
+          yesterdayTotal += log.amount;
+          yesterdayForwardedCount++;
         }
       } else if (log.status == TransactionStatus.filtered) {
         totalFiltered++;
         if (isToday) {
           todayFilteredCount++;
+        } else if (isYesterday) {
+          yesterdayFilteredCount++;
         }
       } else if (log.status == TransactionStatus.failed) {
         totalFailed++;
@@ -311,8 +334,13 @@ class TransactionHistoryService {
       'todayTotal': todayTotal,
       'todayForwardedCount': todayForwardedCount,
       'todayFilteredCount': todayFilteredCount,
+      'yesterdayTotal': yesterdayTotal,
+      'yesterdayForwardedCount': yesterdayForwardedCount,
+      'yesterdayFilteredCount': yesterdayFilteredCount,
       'allTimeTotal': allTimeTotal,
+      'totalAmount': allTimeTotal, // Backwards compatible alias
       'totalForwarded': totalForwarded,
+      'forwardedCount': totalForwarded, // Backwards compatible alias
       'totalFiltered': totalFiltered,
       'totalFailed': totalFailed,
       'totalLogs': logs.length,

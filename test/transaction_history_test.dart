@@ -163,5 +163,113 @@ void main() {
       expect(excelTable, contains('TXN DT\tPAYER\tRRN\tTXN AMT\tMDR\tGST\tNET AMT\tREMARKS'));
       expect(excelTable, contains('07-10-2026 15:31\t9676271296-2@ybl\t099755675527\t13,750.00\t0.00\t0.00\t13,750.00\tPayment from PhonePe / UPI'));
     });
+
+    test('calculates yesterday and all-time statistics with alias keys', () async {
+      final now = DateTime.now();
+      final yesterday = now.subtract(const Duration(days: 1));
+
+      final todayLog = TransactionLog(
+        id: 'today_1',
+        sender: 'User Today',
+        rawBody: 'Credit Rs 500',
+        amount: 500.0,
+        formattedAmount: '500',
+        txnId: 'T1',
+        bank: 'Union Bank',
+        status: TransactionStatus.forwarded,
+        statusReason: 'Forwarded',
+        timestamp: now,
+        isCredit: true,
+      );
+
+      final yesterdayLog = TransactionLog(
+        id: 'yest_1',
+        sender: 'User Yesterday',
+        rawBody: 'Credit Rs 1200',
+        amount: 1200.0,
+        formattedAmount: '1200',
+        txnId: 'Y1',
+        bank: 'Union Bank',
+        status: TransactionStatus.forwarded,
+        statusReason: 'Forwarded',
+        timestamp: yesterday,
+        isCredit: true,
+      );
+
+      final yesterdayFiltered = TransactionLog(
+        id: 'yest_filtered',
+        sender: 'VK-UBIN',
+        rawBody: 'OTP 1234',
+        amount: 0.0,
+        formattedAmount: '0',
+        txnId: '',
+        bank: 'Union Bank',
+        status: TransactionStatus.filtered,
+        statusReason: 'Filtered',
+        timestamp: yesterday,
+        isCredit: false,
+      );
+
+      await TransactionHistoryService.addLog(todayLog);
+      await TransactionHistoryService.addLog(yesterdayLog);
+      await TransactionHistoryService.addLog(yesterdayFiltered);
+
+      final stats = await TransactionHistoryService.getStats();
+
+      // Today
+      expect(stats['todayTotal'], 500.0);
+      expect(stats['todayForwardedCount'], 1);
+
+      // Yesterday
+      expect(stats['yesterdayTotal'], 1200.0);
+      expect(stats['yesterdayForwardedCount'], 1);
+      expect(stats['yesterdayFilteredCount'], 1);
+
+      // All-Time (with backwards-compatible aliases)
+      expect(stats['allTimeTotal'], 1700.0);
+      expect(stats['totalAmount'], 1700.0);
+      expect(stats['totalForwarded'], 2);
+      expect(stats['forwardedCount'], 2);
+    });
+
+    test('exports customLogs when provided for date filtering', () async {
+      final logA = TransactionLog(
+        id: 'a',
+        sender: 'Payer A',
+        rawBody: 'Credit Rs 100',
+        amount: 100.0,
+        formattedAmount: '100',
+        txnId: 'TXN_A',
+        bank: 'Union Bank',
+        status: TransactionStatus.forwarded,
+        statusReason: 'Forwarded',
+        timestamp: DateTime(2026, 10, 6, 10, 0),
+        isCredit: true,
+      );
+      final logB = TransactionLog(
+        id: 'b',
+        sender: 'Payer B',
+        rawBody: 'Credit Rs 200',
+        amount: 200.0,
+        formattedAmount: '200',
+        txnId: 'TXN_B',
+        bank: 'Union Bank',
+        status: TransactionStatus.forwarded,
+        statusReason: 'Forwarded',
+        timestamp: DateTime(2026, 10, 7, 10, 0),
+        isCredit: true,
+      );
+
+      await TransactionHistoryService.addLog(logA);
+      await TransactionHistoryService.addLog(logB);
+
+      // Export only logB as customLogs
+      final statement = await TransactionHistoryService.exportCleanStatementText(
+        customLogs: [logB],
+      );
+      expect(statement, contains('PAYER   : Payer B'));
+      expect(statement, isNot(contains('PAYER   : Payer A')));
+      expect(statement, contains('Total Credited : ₹200.00'));
+    });
   });
 }

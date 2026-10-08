@@ -19,6 +19,8 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   Map<String, dynamic> _stats = {};
   String _searchQuery = '';
   int _selectedSegment = 0; // 0: All, 1: Credited, 2: Filtered
+  int _selectedDateFilter = 0; // 0: Today, 1: Yesterday, 2: Pick Date, 3: All Time
+  DateTime? _customSelectedDate;
   final TextEditingController _searchController = TextEditingController();
 
   @override
@@ -48,7 +50,35 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   }
 
   List<TransactionLog> get _filteredLogs {
+    final now = DateTime.now();
+    final yesterday = now.subtract(const Duration(days: 1));
+
     return _allLogs.where((log) {
+      // 1. Date Filter
+      if (_selectedDateFilter == 0) {
+        // Today
+        final isToday = log.timestamp.year == now.year &&
+            log.timestamp.month == now.month &&
+            log.timestamp.day == now.day;
+        if (!isToday) return false;
+      } else if (_selectedDateFilter == 1) {
+        // Yesterday
+        final isYesterday = log.timestamp.year == yesterday.year &&
+            log.timestamp.month == yesterday.month &&
+            log.timestamp.day == yesterday.day;
+        if (!isYesterday) return false;
+      } else if (_selectedDateFilter == 2) {
+        // Custom Selected Date
+        if (_customSelectedDate != null) {
+          final isSameDay = log.timestamp.year == _customSelectedDate!.year &&
+              log.timestamp.month == _customSelectedDate!.month &&
+              log.timestamp.day == _customSelectedDate!.day;
+          if (!isSameDay) return false;
+        }
+      }
+      // If _selectedDateFilter == 3, All Time (no date restriction)
+
+      // 2. Segment Filter
       if (_selectedSegment == 1 && log.status != TransactionStatus.forwarded) {
         return false;
       }
@@ -56,6 +86,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
         return false;
       }
 
+      // 3. Search Query
       if (_searchQuery.isNotEmpty) {
         final query = _searchQuery.toLowerCase();
         final matchesSender = log.sender.toLowerCase().contains(query);
@@ -71,14 +102,160 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
 
   String _formatTimestamp(DateTime dt) {
     final now = DateTime.now();
+    final yesterday = now.subtract(const Duration(days: 1));
     final isToday = dt.year == now.year && dt.month == now.month && dt.day == now.day;
+    final isYesterday = dt.year == yesterday.year && dt.month == yesterday.month && dt.day == yesterday.day;
     final hour = dt.hour.toString().padLeft(2, '0');
     final minute = dt.minute.toString().padLeft(2, '0');
 
     if (isToday) {
       return 'Today, $hour:$minute';
+    } else if (isYesterday) {
+      return 'Yesterday, $hour:$minute';
     }
     return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} $hour:$minute';
+  }
+
+  String _getMonthAbbr(int month) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    if (month >= 1 && month <= 12) {
+      return months[month - 1];
+    }
+    return '';
+  }
+
+  String _formatCompactCurrency(double amount) {
+    if (amount == amount.truncateToDouble()) {
+      final whole = amount.toInt().toString();
+      if (whole.length > 3) {
+        final lastThree = whole.substring(whole.length - 3);
+        final remaining = whole.substring(0, whole.length - 3);
+        final reg = RegExp(r'(\d+?)(?=(\d{2})+(?!\d))');
+        final formattedRemaining = remaining.replaceAllMapped(reg, (Match m) => '${m[1]},');
+        return '$formattedRemaining,$lastThree';
+      }
+      return whole;
+    }
+    return TransactionHistoryService.formatCurrency(amount);
+  }
+
+  Future<void> _pickCustomDate() async {
+    final now = DateTime.now();
+    DateTime tempDate = _customSelectedDate ?? now;
+    if (tempDate.isAfter(now)) {
+      tempDate = now;
+    }
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (ctx) => Container(
+        height: 310,
+        color: IosColors.secondaryBackground,
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Container(
+                color: IosColors.tertiaryBackground,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: const Text('Cancel', style: TextStyle(color: IosColors.systemRed)),
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                    const Text(
+                      'Select History Date',
+                      style: TextStyle(color: IosColors.label, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: const Text('Done', style: TextStyle(color: IosColors.systemBlue, fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        setState(() {
+                          _customSelectedDate = tempDate;
+                          _selectedDateFilter = 2;
+                        });
+                        Navigator.of(ctx).pop();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: CupertinoDatePicker(
+                  mode: CupertinoDatePickerMode.date,
+                  initialDateTime: tempDate,
+                  maximumDate: DateTime(now.year, now.month, now.day, 23, 59, 59),
+                  minimumDate: DateTime(2025, 1, 1),
+                  onDateTimeChanged: (newDt) {
+                    tempDate = newDt;
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDateFilterChip({
+    required int index,
+    required String label,
+    required IconData icon,
+    VoidCallback? onTapCustom,
+  }) {
+    final isSelected = _selectedDateFilter == index;
+    return GestureDetector(
+      onTap: onTapCustom ??
+          () {
+            setState(() {
+              _selectedDateFilter = index;
+            });
+          },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+        decoration: BoxDecoration(
+          color: isSelected ? IosColors.systemBlue : IosColors.secondaryBackground,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? IosColors.systemBlue : IosColors.separator,
+            width: 0.8,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: IosColors.systemBlue.withValues(alpha: 0.35),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 14,
+              color: isSelected ? Colors.white : IosColors.secondaryLabel,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                color: isSelected ? Colors.white : IosColors.label,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _showMoreOptions() async {
@@ -115,6 +292,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
               Navigator.of(ctx).pop();
               final text = await TransactionHistoryService.exportCleanStatementText(
                 creditedOnly: _selectedSegment == 1,
+                customLogs: _filteredLogs,
               );
               await Clipboard.setData(ClipboardData(text: text));
               if (mounted) {
@@ -138,6 +316,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
               Navigator.of(ctx).pop();
               final tsv = await TransactionHistoryService.exportExcelTable(
                 creditedOnly: _selectedSegment == 1,
+                customLogs: _filteredLogs,
               );
               await Clipboard.setData(ClipboardData(text: tsv));
               if (mounted) {
@@ -367,7 +546,9 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                             ),
                             onPressed: () async {
-                              final tsv = await TransactionHistoryService.exportExcelTable();
+                              final tsv = await TransactionHistoryService.exportExcelTable(
+                                customLogs: statementLogs,
+                              );
                               await Clipboard.setData(ClipboardData(text: tsv));
                               if (context.mounted) {
                                 Navigator.of(ctx).pop();
@@ -396,7 +577,9 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                               style: TextStyle(fontSize: 13),
                             ),
                             onPressed: () async {
-                              final text = await TransactionHistoryService.exportCleanStatementText();
+                              final text = await TransactionHistoryService.exportCleanStatementText(
+                                customLogs: statementLogs,
+                              );
                               await Clipboard.setData(ClipboardData(text: text));
                               if (context.mounted) {
                                 Navigator.of(ctx).pop();
@@ -689,8 +872,45 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   @override
   Widget build(BuildContext context) {
     final todayTotal = (_stats['todayTotal'] is num) ? (_stats['todayTotal'] as num).toDouble() : 0.0;
-    final totalAmount = (_stats['totalAmount'] is num) ? (_stats['totalAmount'] as num).toDouble() : 0.0;
     final todayCount = (_stats['todayForwardedCount'] is int) ? (_stats['todayForwardedCount'] as int) : 0;
+    final allTimeTotal = (_stats['allTimeTotal'] is num)
+        ? (_stats['allTimeTotal'] as num).toDouble()
+        : ((_stats['totalAmount'] is num) ? (_stats['totalAmount'] as num).toDouble() : 0.0);
+    final allTimeCount = (_stats['totalForwarded'] is int)
+        ? (_stats['totalForwarded'] as int)
+        : ((_stats['forwardedCount'] is int) ? (_stats['forwardedCount'] as int) : 0);
+
+    String card1Title = "TODAY'S CREDITS";
+    double card1Amount = todayTotal;
+    int card1Count = todayCount;
+
+    if (_selectedDateFilter == 1) {
+      card1Title = "YESTERDAY'S CREDITS";
+      card1Amount = (_stats['yesterdayTotal'] is num) ? (_stats['yesterdayTotal'] as num).toDouble() : 0.0;
+      card1Count = (_stats['yesterdayForwardedCount'] is int) ? (_stats['yesterdayForwardedCount'] as int) : 0;
+    } else if (_selectedDateFilter == 2) {
+      if (_customSelectedDate != null) {
+        final dayStr = _customSelectedDate!.day.toString().padLeft(2, '0');
+        final monthStr = _getMonthAbbr(_customSelectedDate!.month).toUpperCase();
+        card1Title = '$dayStr $monthStr CREDITS';
+        final dayLogs = _allLogs.where((l) =>
+            l.timestamp.year == _customSelectedDate!.year &&
+            l.timestamp.month == _customSelectedDate!.month &&
+            l.timestamp.day == _customSelectedDate!.day &&
+            l.status == TransactionStatus.forwarded).toList();
+        card1Amount = dayLogs.fold(0.0, (sum, l) => sum + l.amount);
+        card1Count = dayLogs.length;
+      } else {
+        card1Title = 'SELECTED DATE';
+        card1Amount = 0.0;
+        card1Count = 0;
+      }
+    } else if (_selectedDateFilter == 3) {
+      card1Title = 'TOTAL CREDITS';
+      card1Amount = allTimeTotal;
+      card1Count = allTimeCount;
+    }
+
     final logsList = _filteredLogs;
 
     return Scaffold(
@@ -752,9 +972,9 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text(
-                                  "TODAY'S CREDITS",
-                                  style: TextStyle(
+                                Text(
+                                  card1Title,
+                                  style: const TextStyle(
                                     color: IosColors.secondaryLabel,
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
@@ -763,7 +983,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  '₹${todayTotal.toStringAsFixed(todayTotal.truncateToDouble() == todayTotal ? 0 : 2)}',
+                                  '₹${_formatCompactCurrency(card1Amount)}',
                                   style: const TextStyle(
                                     color: IosColors.systemGreen,
                                     fontSize: 22,
@@ -773,7 +993,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  '$todayCount payment${todayCount != 1 ? 's' : ''}',
+                                  '$card1Count payment${card1Count != 1 ? 's' : ''}',
                                   style: const TextStyle(
                                     color: IosColors.secondaryLabel,
                                     fontSize: 12,
@@ -804,7 +1024,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    '₹${totalAmount.toStringAsFixed(totalAmount.truncateToDouble() == totalAmount ? 0 : 2)}',
+                                    '₹${_formatCompactCurrency(allTimeTotal)}',
                                     style: const TextStyle(
                                       color: IosColors.label,
                                       fontSize: 22,
@@ -814,7 +1034,7 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    '${_stats['forwardedCount'] ?? 0} total payments',
+                                    '$allTimeCount total payment${allTimeCount != 1 ? 's' : ''}',
                                     style: const TextStyle(
                                       color: IosColors.secondaryLabel,
                                       fontSize: 12,
@@ -825,6 +1045,54 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                             ),
                           ),
                         ],
+                      ),
+                    ),
+
+                    // Date Filter Chips (Today, Yesterday, Pick Date, All Time)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 2),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        physics: const BouncingScrollPhysics(),
+                        child: Row(
+                          children: [
+                            _buildDateFilterChip(
+                              index: 0,
+                              label: 'Today',
+                              icon: CupertinoIcons.sun_max_fill,
+                            ),
+                            const SizedBox(width: 8),
+                            _buildDateFilterChip(
+                              index: 1,
+                              label: 'Yesterday',
+                              icon: CupertinoIcons.arrow_counterclockwise,
+                            ),
+                            const SizedBox(width: 8),
+                            _buildDateFilterChip(
+                              index: 2,
+                              label: _customSelectedDate != null
+                                  ? '${_customSelectedDate!.day.toString().padLeft(2, '0')} ${_getMonthAbbr(_customSelectedDate!.month)}'
+                                  : 'Pick Date',
+                              icon: CupertinoIcons.calendar,
+                              onTapCustom: () {
+                                if (_selectedDateFilter == 2 && _customSelectedDate != null) {
+                                  _pickCustomDate();
+                                } else if (_customSelectedDate != null) {
+                                  setState(() => _selectedDateFilter = 2);
+                                } else {
+                                  _pickCustomDate();
+                                }
+                              },
+                            ),
+                            const SizedBox(width: 8),
+                            _buildDateFilterChip(
+                              index: 3,
+                              label: 'All Time',
+                              icon: CupertinoIcons.time,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
 
@@ -904,9 +1172,15 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      const Text(
-                        'Incoming Union Bank SMS logs will appear here.',
-                        style: TextStyle(
+                      Text(
+                        _selectedDateFilter == 0
+                            ? 'No transactions recorded today yet.'
+                            : _selectedDateFilter == 1
+                                ? 'No transactions recorded yesterday.'
+                                : _selectedDateFilter == 2
+                                    ? 'No transactions on selected date.'
+                                    : 'Incoming Union Bank SMS logs will appear here.',
+                        style: const TextStyle(
                           color: IosColors.tertiaryLabel,
                           fontSize: 13,
                         ),
