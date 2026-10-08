@@ -115,7 +115,11 @@ class UpdateService {
             if (item is Map<String, dynamic>) {
               final name = (item['name'] ?? '').toString();
               if (name.endsWith('.apk')) {
-                apkUrl = (item['browser_download_url'] ?? '').toString();
+                // GitHub requires the API asset endpoint ('url') with Authorization token
+                // for private repositories, because 'browser_download_url' returns 404.
+                final String apiUrl = (item['url'] ?? '').toString();
+                final String browserUrl = (item['browser_download_url'] ?? '').toString();
+                apkUrl = (token.isNotEmpty && apiUrl.isNotEmpty) ? apiUrl : (browserUrl.isNotEmpty ? browserUrl : apiUrl);
                 apkName = name;
                 apkSize = (item['size'] is int) ? item['size'] as int : 0;
                 break;
@@ -187,7 +191,16 @@ class UpdateService {
       final request = http.Request('GET', Uri.parse(downloadUrl));
       request.headers.addAll(headers);
 
-      final response = await client.send(request);
+      http.StreamedResponse response = await client.send(request);
+
+      // Explicitly follow 301/302 redirects if returned
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.containsKey('location')) {
+        final redirectUrl = response.headers['location']!;
+        final redirectReq = http.Request('GET', Uri.parse(redirectUrl));
+        // Pre-signed S3 download URLs must NOT have Authorization header attached
+        redirectReq.headers['Accept'] = 'application/octet-stream';
+        response = await client.send(redirectReq);
+      }
 
       if (response.statusCode == 200) {
         final totalBytes = response.contentLength ?? 0;
