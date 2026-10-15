@@ -173,8 +173,38 @@ class UpdateService {
         .toList();
   }
 
+  /// Resolve app's cache directory via native MethodChannel
+  static Future<String> getCacheDir() async {
+    try {
+      final String? path = await _channel.invokeMethod<String>('getCacheDir');
+      if (path != null && path.isNotEmpty) return path;
+    } catch (e) {
+      debugPrint('Error getting cache dir: $e');
+    }
+    return Directory.systemTemp.path;
+  }
+
+  /// Check whether "Install unknown apps" permission is granted on Android 8.0+
+  static Future<bool> canRequestPackageInstalls() async {
+    try {
+      final bool? result = await _channel.invokeMethod<bool>('canRequestPackageInstalls');
+      return result ?? true;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  /// Launch Android Settings screen to allow "Install unknown apps"
+  static Future<void> openInstallPermissionSettings() async {
+    try {
+      await _channel.invokeMethod<void>('openInstallPermissionSettings');
+    } catch (e) {
+      debugPrint('Error opening install settings: $e');
+    }
+  }
+
   /// Download APK with progress tracking and trigger Android install
-  static Future<bool> downloadAndInstallApk({
+  static Future<UpdateInstallResult> downloadAndInstallApk({
     required String downloadUrl,
     required Function(double progress, int receivedBytes, int totalBytes) onProgress,
   }) async {
@@ -206,12 +236,14 @@ class UpdateService {
         final totalBytes = response.contentLength ?? 0;
         int receivedBytes = 0;
 
-        // Save to cache directory
-        final tempDir = Directory.systemTemp;
-        final apkFile = File('${tempDir.path}/inyatech_update.apk');
+        // Save directly into app's dedicated cache directory
+        final cacheDirPath = await getCacheDir();
+        final apkFile = File('$cacheDirPath/inyatech_update.apk');
 
         if (await apkFile.exists()) {
-          await apkFile.delete();
+          try {
+            await apkFile.delete();
+          } catch (_) {}
         }
 
         final sink = apkFile.openWrite();
@@ -226,15 +258,23 @@ class UpdateService {
         await sink.flush();
         await sink.close();
 
+        // Check if Android allows installing unknown apps
+        final bool canInstall = await canRequestPackageInstalls();
+        if (!canInstall) {
+          await openInstallPermissionSettings();
+          return UpdateInstallResult.permissionRequired;
+        }
+
         // Trigger native APK installer
-        return await installApk(apkFile.path);
+        final bool installed = await installApk(apkFile.path);
+        return installed ? UpdateInstallResult.success : UpdateInstallResult.installFailed;
       } else {
-        debugPrint('Download APK failed: ${response.statusCode}');
-        return false;
+        debugPrint('Download APK failed with HTTP status: ${response.statusCode}');
+        return UpdateInstallResult.downloadFailed;
       }
     } catch (e) {
       debugPrint('Error downloading APK: $e');
-      return false;
+      return UpdateInstallResult.downloadFailed;
     } finally {
       client.close();
     }
@@ -262,6 +302,13 @@ class UpdateService {
   }
 }
 
+enum UpdateInstallResult {
+  success,
+  downloadFailed,
+  permissionRequired,
+  installFailed,
+}
+
 class _IosUpdateDialog extends StatefulWidget {
   final UpdateInfo info;
 
@@ -276,16 +323,18 @@ class _IosUpdateDialogState extends State<_IosUpdateDialog> {
   double _progress = 0.0;
   String _progressText = '';
   String? _errorMessage;
+  bool _needsPermission = false;
 
   Future<void> _startDownload() async {
     setState(() {
       _isDownloading = true;
       _errorMessage = null;
+      _needsPermission = false;
       _progress = 0.0;
       _progressText = 'Starting download...';
     });
 
-    final success = await UpdateService.downloadAndInstallApk(
+    final result = await UpdateService.downloadAndInstallApk(
       downloadUrl: widget.info.apkDownloadUrl,
       onProgress: (progress, received, total) {
         if (mounted) {
@@ -302,12 +351,27 @@ class _IosUpdateDialogState extends State<_IosUpdateDialog> {
     );
 
     if (mounted) {
-      if (!success) {
-        setState(() {
-          _isDownloading = false;
-          _errorMessage = 'Download or installation failed. Please check internet connection.';
-        });
-      }
+      setState(() {
+        _isDownloading = false;
+        switch (result) {
+          case UpdateInstallResult.success:
+            _errorMessage = null;
+            _needsPermission = false;
+            break;
+          case UpdateInstallResult.permissionRequired:
+            _errorMessage = 'Download complete (100%)! Please allow "Install unknown apps" permission for InyaTech in Settings, then tap Retry Install.';
+            _needsPermission = true;
+            break;
+          case UpdateInstallResult.installFailed:
+            _errorMessage = 'Download complete (100%), but package installer could not open. Please allow "Install unknown apps" in Settings, then tap Retry Install.';
+            _needsPermission = true;
+            break;
+          case UpdateInstallResult.downloadFailed:
+            _errorMessage = 'Download failed. Please check your internet connection.';
+            _needsPermission = false;
+            break;
+        }
+      });
     }
   }
 
@@ -374,7 +438,11 @@ class _IosUpdateDialogState extends State<_IosUpdateDialog> {
               const SizedBox(height: 8),
               Text(
                 _errorMessage!,
-                style: const TextStyle(color: IosColors.systemRed, fontSize: 12),
+                style: TextStyle(
+                  color: _needsPermission ? IosColors.systemOrange : IosColors.systemRed,
+                  fontSize: 12,
+                  height: 1.3,
+                ),
               ),
             ],
           ],
@@ -388,15 +456,35 @@ class _IosUpdateDialogState extends State<_IosUpdateDialog> {
               ),
             ]
           : [
-              CupertinoDialogAction(
-                child: const Text('Later'),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-              CupertinoDialogAction(
-                isDefaultAction: true,
-                onPressed: _startDownload,
-                child: const Text('Update Now'),
-              ),
+              if (_needsPermission) ...[
+                CupertinoDialogAction(
+                  child: const Text('Allow in Settings'),
+                  onPressed: () async {
+                    await UpdateService.openInstallPermissionSettings();
+                  },
+                ),
+                CupertinoDialogAction(
+                  isDefaultAction: true,
+                  child: const Text('Retry Install'),
+                  onPressed: () async {
+                    final cacheDir = await UpdateService.getCacheDir();
+                    final success = await UpdateService.installApk('$cacheDir/inyatech_update.apk');
+                    if (success && mounted) {
+                      Navigator.of(context).pop();
+                    }
+                  },
+                ),
+              ] else ...[
+                CupertinoDialogAction(
+                  child: const Text('Later'),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+                CupertinoDialogAction(
+                  isDefaultAction: true,
+                  onPressed: _startDownload,
+                  child: const Text('Update Now'),
+                ),
+              ],
             ],
     );
   }

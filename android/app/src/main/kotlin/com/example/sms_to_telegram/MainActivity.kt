@@ -100,6 +100,27 @@ class MainActivity : FlutterFragmentActivity() {
                     startForegroundServiceInternal()
                     result.success(true)
                 }
+                "getCacheDir" -> {
+                    result.success(cacheDir.absolutePath)
+                }
+                "canRequestPackageInstalls" -> {
+                    val canInstall = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        packageManager.canRequestPackageInstalls()
+                    } else {
+                        true
+                    }
+                    result.success(canInstall)
+                }
+                "openInstallPermissionSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                            data = Uri.parse("package:$packageName")
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        startActivity(intent)
+                    }
+                    result.success(true)
+                }
                 "installApk" -> {
                     val filePath = call.argument<String>("filePath")
                     if (filePath != null) {
@@ -118,17 +139,40 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun installApkInternal(filePath: String): Boolean {
         return try {
-            val file = File(filePath)
-            if (!file.exists()) return false
+            val sourceFile = File(filePath)
+            if (!sourceFile.exists()) {
+                android.util.Log.e("MainActivity", "installApkInternal: File does not exist at $filePath")
+                return false
+            }
+
+            // Always copy APK to app's dedicated cache directory so FileProvider
+            // is guaranteed to resolve it against cache-path in file_paths.xml
+            val targetFile = File(cacheDir, "inyatech_update.apk")
+            if (sourceFile.canonicalPath != targetFile.canonicalPath) {
+                sourceFile.copyTo(targetFile, overwrite = true)
+            }
+
+            // Android 8.0+ Unknown App Sources Permission Check
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!packageManager.canRequestPackageInstalls()) {
+                    android.util.Log.w("MainActivity", "Install unknown apps permission not granted. Launching settings...")
+                    val manageIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:$packageName")
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    startActivity(manageIntent)
+                    return false
+                }
+            }
 
             val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 FileProvider.getUriForFile(
                     this,
                     "$packageName.fileprovider",
-                    file
+                    targetFile
                 )
             } else {
-                Uri.fromFile(file)
+                Uri.fromFile(targetFile)
             }
 
             val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -138,6 +182,7 @@ class MainActivity : FlutterFragmentActivity() {
             startActivity(intent)
             true
         } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error installing APK: ${e.message}", e)
             false
         }
     }
