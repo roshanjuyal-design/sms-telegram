@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
@@ -20,9 +21,18 @@ class ForegroundService : Service() {
         const val NOTIFICATION_ID = 1001
     }
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        wakeLock = powerManager?.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "sms_to_telegram:foreground_service_lock"
+        )
+        wakeLock?.acquire()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -54,11 +64,11 @@ class ForegroundService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("InyaTech SMS Forwarder")
-            .setContentText("InyaTech SMS Forwarder is active")
+            .setContentText("InyaTech 24x7 Payment Forwarder is active")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
@@ -68,9 +78,9 @@ class ForegroundService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Keeps SMS listening service active in the background"
+                description = "Keeps SMS listening service active in the background 24x7"
                 setShowBadge(false)
             }
 
@@ -85,6 +95,11 @@ class ForegroundService : Service() {
 
     override fun onDestroy() {
         Log.d("ForegroundService", "ForegroundService destroyed")
+        if (wakeLock?.isHeld == true) {
+            try {
+                wakeLock?.release()
+            } catch (_: Exception) {}
+        }
         super.onDestroy()
     }
 }

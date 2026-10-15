@@ -39,19 +39,42 @@ class SmsReceiver : BroadcastReceiver() {
                 "body" to body
             )
 
-            // Dispatch to Flutter MethodChannel on the main thread
-            Handler(Looper.getMainLooper()).post {
-                try {
-                    MainActivity.methodChannel?.invokeMethod("onSmsReceived", smsData)
-                } catch (e: Exception) {
-                    Log.e("SmsReceiver", "Error dispatching SMS to Flutter: ${e.message}")
-                } finally {
-                    if (wakeLock?.isHeld == true) {
-                        try {
-                            wakeLock.release()
-                        } catch (_: Exception) {}
+            // If MainActivity and its MethodChannel are active, dispatch to Flutter for live UI updates
+            val channel = MainActivity.methodChannel
+            if (channel != null) {
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        channel.invokeMethod("onSmsReceived", smsData)
+                    } catch (e: Exception) {
+                        Log.e("SmsReceiver", "Error dispatching SMS to Flutter, falling back to Native: ${e.message}")
+                        NativeSmsProcessor.process(context, sender, body)
+                    } finally {
+                        if (wakeLock?.isHeld == true) {
+                            try {
+                                wakeLock.release()
+                            } catch (_: Exception) {}
+                        }
                     }
                 }
+            } else {
+                // MainActivity is destroyed, sleeping, or background killed.
+                // Execute Native Fallback immediately so 0 SMS is ever dropped!
+                val pendingResult = goAsync()
+                Thread {
+                    try {
+                        Log.d("SmsReceiver", "MainActivity is inactive/destroyed. Executing NativeSmsProcessor fallback.")
+                        NativeSmsProcessor.process(context, sender, body)
+                    } catch (e: Exception) {
+                        Log.e("SmsReceiver", "Error in NativeSmsProcessor: ${e.message}")
+                    } finally {
+                        pendingResult.finish()
+                        if (wakeLock?.isHeld == true) {
+                            try {
+                                wakeLock.release()
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }.start()
             }
         }
     }

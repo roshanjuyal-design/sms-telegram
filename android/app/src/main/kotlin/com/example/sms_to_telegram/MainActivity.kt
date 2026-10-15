@@ -271,8 +271,12 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    override fun shouldDestroyEngineWithHost(): Boolean {
+        return false
+    }
+
     override fun onDestroy() {
-        methodChannel = null
+        // Keep methodChannel intact so background components can still reach active engine if alive
         super.onDestroy()
     }
 }
